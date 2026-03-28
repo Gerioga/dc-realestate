@@ -21,6 +21,25 @@ JURIS_COLORS = {
     "Alexandria": "#EC553A",
 }
 
+ZIP_LABELS = {
+    "20001": "Shaw / U St", "20002": "Capitol Hill NE", "20003": "Capitol Hill SE",
+    "20004": "Penn Quarter", "20005": "Downtown", "20006": "Foggy Bottom",
+    "20007": "Georgetown", "20008": "Cleveland Pk", "20009": "Adams Morgan",
+    "20010": "Columbia Heights", "20011": "Petworth", "20012": "Shepherd Park",
+    "20015": "Chevy Chase DC", "20016": "Tenleytown", "20017": "Brookland",
+    "20018": "Woodridge", "20019": "Deanwood", "20020": "Anacostia",
+    "20024": "SW Waterfront", "20032": "Congress Hts", "20036": "Dupont Circle",
+    "20037": "West End",
+    "22201": "Clarendon", "22202": "Crystal City", "22203": "Ballston",
+    "22204": "Columbia Pike", "22205": "Westover", "22206": "Fairlington",
+    "22207": "Chain Bridge", "22209": "Rosslyn",
+    "22301": "Del Ray", "22302": "Jefferson Park", "22303": "Groveton",
+    "22304": "Seminary", "22305": "Arlandria", "22306": "Belle View",
+    "22307": "Fort Hunt", "22308": "Waynewood", "22309": "Mt Vernon S",
+    "22310": "Franconia", "22311": "Lincolnia", "22312": "Pinecrest",
+    "22314": "Old Town", "22315": "Kingstowne",
+}
+
 
 def compute_net_yield(price, monthly_rent):
     if price <= 0:
@@ -65,9 +84,15 @@ with st.sidebar:
     st.divider()
     all_ptypes = sorted(yld["property_type"].dropna().unique().tolist())
     sel_ptypes = st.multiselect("Property Type", all_ptypes,
-                                default=["Condo/Co-op"] if "Condo/Co-op" in all_ptypes else all_ptypes[:1])
+                                default=all_ptypes,
+                                help="Compare across property types: Condo vs Townhouse vs Single Family")
     all_juris = sorted(yld["jurisdiction"].dropna().unique().tolist())
     sel_juris = st.multiselect("Jurisdiction", all_juris, default=all_juris)
+
+    # Neighborhood filter
+    all_neighborhoods = sorted(yld["neighborhood"].dropna().unique().tolist())
+    sel_neighborhoods = st.multiselect("Neighborhoods", all_neighborhoods, default=all_neighborhoods,
+                                       help="Filter to specific neighborhoods for comparison")
 
     fmr_col = BR_TO_FMR[inv_bedroom]
     default_rent = int(yld[fmr_col].median()) if fmr_col in yld.columns and yld[fmr_col].notna().any() else 2000
@@ -79,10 +104,12 @@ if sel_ptypes:
     opp = opp[opp["property_type"].isin(sel_ptypes)]
 if sel_juris:
     opp = opp[opp["jurisdiction"].isin(sel_juris)]
+if sel_neighborhoods:
+    opp = opp[opp["neighborhood"].isin(sel_neighborhoods)]
 opp = opp[opp["price"] <= inv_budget].copy()
 
 if opp.empty:
-    st.warning("No properties match the current filters. Try raising the budget.")
+    st.warning("No properties match the current filters. Try raising the budget or expanding filters.")
     st.stop()
 
 opp["monthly_rent_used"] = inv_rent
@@ -91,6 +118,7 @@ opp["net_yield_calc"] = opp.apply(
     lambda r: compute_net_yield(r["price"], inv_rent), axis=1
 ).round(2)
 opp["price_to_rent"] = (opp["price"] / (inv_rent * 12)).round(1)
+opp["one_pct_ratio"] = (inv_rent / opp["price"] * 100).round(3)
 
 latest_q = mkt["period_end"].max()
 snap = mkt[mkt["period_end"] == latest_q].copy()
@@ -100,16 +128,40 @@ opp = opp.sort_values("net_yield_calc", ascending=False).reset_index(drop=True)
 
 st.markdown(
     f"**Budget:** ${inv_budget:,.0f} · **Bedroom:** {inv_bedroom} · "
-    f"**Rent:** ${inv_rent:,.0f}/mo"
+    f"**Rent:** ${inv_rent:,.0f}/mo · **Types:** {', '.join(sel_ptypes)}"
 )
 
-mc = st.columns(4)
-mc[0].metric("Neighborhoods Found", len(opp))
+mc = st.columns(5)
+mc[0].metric("Matches Found", len(opp))
 mc[1].metric("Avg Gross Yield", f"{opp['gross_yield_calc'].mean():.1f}%")
 mc[2].metric("Avg Net Yield", f"{opp['net_yield_calc'].mean():.1f}%")
 mc[3].metric("Avg Price-to-Rent", f"{opp['price_to_rent'].mean():.1f}x")
+passes_1pct = (opp["one_pct_ratio"] >= 1.0).sum()
+mc[4].metric("Pass 1% Rule", f"{passes_1pct} / {len(opp)}")
 
 st.divider()
+
+# ── Comparison: Property Type Side-by-Side ──
+if len(sel_ptypes) > 1:
+    st.subheader("Property Type Comparison")
+    comp = opp.groupby("property_type").agg(
+        count=("price", "count"),
+        avg_price=("price", "median"),
+        avg_gross=("gross_yield_calc", "mean"),
+        avg_net=("net_yield_calc", "mean"),
+        avg_ptr=("price_to_rent", "mean"),
+        pct_1pct=("one_pct_ratio", lambda x: (x >= 1.0).mean() * 100),
+    ).reset_index()
+    comp.columns = ["Type", "# Matches", "Median Price", "Avg Gross Yield",
+                     "Avg Net Yield", "Avg P/R", "% Pass 1% Rule"]
+    fmt_comp = {
+        "Median Price": "${:,.0f}", "Avg Gross Yield": "{:.1f}%",
+        "Avg Net Yield": "{:.1f}%", "Avg P/R": "{:.1f}x", "% Pass 1% Rule": "{:.0f}%",
+    }
+    for col, f in fmt_comp.items():
+        comp[col] = comp[col].map(lambda x, _f=f: _f.format(x) if pd.notna(x) else "N/A")
+    st.dataframe(comp, use_container_width=True, hide_index=True)
+    st.caption("Use sidebar filters to compare: e.g. select 'Condo/Co-op' + 'Townhouse' to see which offers better yields.")
 
 st.subheader("Neighborhood Yield Rankings")
 
@@ -122,11 +174,12 @@ sel_rank = st.selectbox("Rank by", list(rank_opts.keys()))
 rank_col = rank_opts[sel_rank]
 ascending_rank = "Price-to-Rent" in sel_rank
 
-rank_df = (opp.groupby(["neighborhood", "jurisdiction"])
+rank_df = (opp.groupby(["neighborhood", "jurisdiction", "property_type"])
            .agg(**{rank_col: (rank_col, "mean")})
            .reset_index()
            .sort_values(rank_col, ascending=ascending_rank)
-           .head(20))
+           .head(25))
+rank_df["label"] = rank_df["neighborhood"] + " (" + rank_df["property_type"].str[:6] + ")"
 
 color_scale = "RdYlGn_r" if ascending_rank else "RdYlGn"
 bar_colors = px.colors.sample_colorscale(
@@ -136,46 +189,70 @@ bar_colors = px.colors.sample_colorscale(
 )
 
 fig_rank = go.Figure(go.Bar(
-    y=rank_df["neighborhood"], x=rank_df[rank_col],
+    y=rank_df["label"], x=rank_df[rank_col],
     orientation="h", marker_color=bar_colors,
     text=rank_df[rank_col].map("{:.1f}".format), textposition="outside",
     customdata=rank_df["jurisdiction"],
     hovertemplate="%{y} (%{customdata})<br>" + sel_rank + ": %{x:.2f}<extra></extra>",
 ))
 fig_rank.update_layout(
-    title=f"Top Neighborhoods by {sel_rank}",
+    title=f"Top Neighborhoods by {sel_rank} (by property type)",
     xaxis_title=sel_rank,
     height=max(350, len(rank_df) * 22),
-    margin=dict(l=160, r=60, t=40, b=40),
+    margin=dict(l=200, r=60, t=40, b=40),
 )
 st.plotly_chart(fig_rank, use_container_width=True)
 
 st.subheader("Price vs Net Yield")
 
-fig_sc = px.scatter(
-    opp.dropna(subset=["net_yield_calc", "price"]),
-    x="price", y="net_yield_calc",
-    color="jurisdiction", color_discrete_map=JURIS_COLORS,
-    size=opp["homes_sold"].clip(lower=1).fillna(1),
-    size_max=25,
-    hover_name="neighborhood",
-    hover_data={"zip": True, "property_type": True,
-                "price": ":$,.0f", "net_yield_calc": ":.2f%"},
-    labels={"price": "Median Price ($)", "net_yield_calc": "Net Yield (%)"},
-    height=460,
-)
-fig_sc.add_vline(x=inv_budget, line_dash="dash", line_color="red",
-                 annotation_text=f"Budget ${inv_budget:,.0f}")
-fig_sc.add_hline(y=0, line_color="grey", line_width=0.5)
-fig_sc.update_layout(title="Each point = zip x property type · size = transaction volume")
-st.plotly_chart(fig_sc, use_container_width=True)
+# Inline filters for this chart
+fc1, fc2 = st.columns(2)
+with fc1:
+    scatter_nh = st.multiselect("Filter Neighborhoods (scatter)",
+                                 sorted(opp["neighborhood"].unique().tolist()),
+                                 default=sorted(opp["neighborhood"].unique().tolist()),
+                                 key="scatter_nh")
+with fc2:
+    scatter_pt = st.multiselect("Filter Property Type (scatter)",
+                                 sorted(opp["property_type"].unique().tolist()),
+                                 default=sorted(opp["property_type"].unique().tolist()),
+                                 key="scatter_pt")
+
+scatter_data = opp[
+    opp["neighborhood"].isin(scatter_nh) & opp["property_type"].isin(scatter_pt)
+].dropna(subset=["net_yield_calc", "price"])
+
+if not scatter_data.empty:
+    fig_sc = px.scatter(
+        scatter_data,
+        x="price", y="net_yield_calc",
+        color="property_type",
+        symbol="jurisdiction",
+        size=scatter_data["homes_sold"].clip(lower=1).fillna(1),
+        size_max=25,
+        hover_name="neighborhood",
+        hover_data={"zip": True, "property_type": True, "jurisdiction": True,
+                    "price": ":$,.0f", "net_yield_calc": ":.2f%",
+                    "one_pct_ratio": ":.2f%"},
+        labels={"price": "Median Price ($)", "net_yield_calc": "Net Yield (%)",
+                "property_type": "Type", "one_pct_ratio": "Rent/Price %"},
+        height=500,
+    )
+    fig_sc.add_vline(x=inv_budget, line_dash="dash", line_color="red",
+                     annotation_text=f"Budget ${inv_budget:,.0f}")
+    fig_sc.add_hline(y=0, line_color="grey", line_width=0.5)
+    fig_sc.update_layout(title="Each point = zip x property type · color = type · symbol = jurisdiction")
+    st.plotly_chart(fig_sc, use_container_width=True)
+else:
+    st.info("No data matches the scatter filters.")
 
 st.subheader("Net Yield vs Days on Market")
 dom_data = opp.dropna(subset=["net_yield_calc", "median_dom"])
 if not dom_data.empty:
     fig_dom = px.scatter(
         dom_data, x="median_dom", y="net_yield_calc",
-        color="jurisdiction", color_discrete_map=JURIS_COLORS,
+        color="property_type",
+        symbol="jurisdiction",
         hover_name="neighborhood",
         labels={"median_dom": "Days on Market", "net_yield_calc": "Net Yield (%)"},
         height=400,
@@ -188,7 +265,7 @@ st.divider()
 st.subheader("Opportunity Details")
 tbl_cols = ["neighborhood", "zip", "jurisdiction", "property_type",
             "price", "sqft", "monthly_rent_used",
-            "gross_yield_calc", "net_yield_calc", "price_to_rent",
+            "gross_yield_calc", "net_yield_calc", "price_to_rent", "one_pct_ratio",
             "median_dom", "avg_sale_to_list"]
 tbl_cols = [c for c in tbl_cols if c in opp.columns]
 tbl = opp[tbl_cols].copy()
@@ -196,7 +273,8 @@ tbl = opp[tbl_cols].copy()
 fmt = {
     "price": "${:,.0f}", "sqft": "{:,.0f}", "monthly_rent_used": "${:,.0f}",
     "gross_yield_calc": "{:.1f}%", "net_yield_calc": "{:.1f}%",
-    "price_to_rent": "{:.1f}x", "median_dom": "{:.0f}", "avg_sale_to_list": "{:.1%}",
+    "price_to_rent": "{:.1f}x", "one_pct_ratio": "{:.2f}%",
+    "median_dom": "{:.0f}", "avg_sale_to_list": "{:.1%}",
 }
 for col, f in fmt.items():
     if col in tbl.columns:
@@ -217,6 +295,7 @@ tbl = tbl.rename(columns={
     "property_type": "Type", "price": "Price", "sqft": "Sqft",
     "monthly_rent_used": "Rent/mo", "gross_yield_calc": "Gross Yield",
     "net_yield_calc": "Net Yield", "price_to_rent": "P/R Ratio",
+    "one_pct_ratio": "1% Ratio",
     "median_dom": "DOM", "avg_sale_to_list": "Sale/List",
 })
 st.caption("Row colors: green >= 5% net yield · yellow 3-5% · red < 3%")

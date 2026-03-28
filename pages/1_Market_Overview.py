@@ -145,64 +145,60 @@ else:
 
 st.divider()
 
-ca, cb = st.columns(2)
+st.subheader("Median Sale Price by Neighborhood")
+price_bar = snap.dropna(subset=["median_sale_price", "neighborhood"]).sort_values("median_sale_price")
+colors = [JURIS_COLORS.get(zip_jurisdiction(z), "#999") for z in price_bar["zip"]]
+fig_pb = go.Figure(go.Bar(
+    y=price_bar["neighborhood"], x=price_bar["median_sale_price"],
+    orientation="h", marker_color=colors,
+    text=price_bar["median_sale_price"].map("${:,.0f}".format),
+    textposition="outside",
+))
+fig_pb.update_layout(
+    xaxis_title="$", height=max(350, len(price_bar) * 22),
+    margin=dict(l=140, r=60, t=20, b=40),
+)
+st.plotly_chart(fig_pb, use_container_width=True)
 
-with ca:
-    st.subheader("Median Sale Price by Neighborhood")
-    price_bar = snap.dropna(subset=["median_sale_price", "neighborhood"]).sort_values("median_sale_price")
-    colors = [JURIS_COLORS.get(zip_jurisdiction(z), "#999") for z in price_bar["zip"]]
-    fig_pb = go.Figure(go.Bar(
-        y=price_bar["neighborhood"], x=price_bar["median_sale_price"],
-        orientation="h", marker_color=colors,
-        text=price_bar["median_sale_price"].map("${:,.0f}".format),
-        textposition="outside",
+st.subheader("Market Heat by Neighborhood")
+heat_cols = ["median_dom", "avg_sale_to_list", "sold_above_list", "off_market_in_two_weeks"]
+heat_cols = [c for c in heat_cols if c in snap.columns]
+col_labels = {
+    "median_dom": "Days on Mkt", "avg_sale_to_list": "Sale / List",
+    "sold_above_list": "% Above List", "off_market_in_two_weeks": "Off Mkt <2wk",
+}
+higher_better = {
+    "median_dom": False, "avg_sale_to_list": True,
+    "sold_above_list": True, "off_market_in_two_weeks": True,
+}
+heat_src = snap[["neighborhood"] + heat_cols].dropna(subset=["median_dom"])
+if not heat_src.empty:
+    z_matrix, text_matrix, col_names, row_names = [], [], [], heat_src["neighborhood"].tolist()
+    for col in heat_cols:
+        vals = pd.to_numeric(heat_src[col], errors="coerce")
+        mn, mx = vals.min(), vals.max()
+        norm = (vals - mn) / (mx - mn + 1e-9)
+        if not higher_better[col]:
+            norm = 1 - norm
+        z_matrix.append(norm.fillna(0.5).tolist())
+        fmt = "{:.0f}" if col == "median_dom" else "{:.0%}"
+        text_matrix.append([fmt.format(v) if pd.notna(v) else "" for v in vals])
+        col_names.append(col_labels[col])
+
+    fig_heat = go.Figure(go.Heatmap(
+        z=z_matrix, x=row_names, y=col_names,
+        text=text_matrix, texttemplate="%{text}", textfont=dict(size=10),
+        colorscale=[[0, "#d73027"], [0.5, "#ffffbf"], [1, "#1a9850"]],
+        showscale=True, zmin=0, zmax=1,
+        colorbar=dict(title="Hot ->", tickvals=[0, 0.5, 1],
+                      ticktext=["Cold", "Mid", "Hot"], len=0.6),
     ))
-    fig_pb.update_layout(
-        xaxis_title="$", height=max(350, len(price_bar) * 22),
-        margin=dict(l=140, r=60, t=20, b=40),
+    fig_heat.update_layout(
+        xaxis=dict(tickangle=-40, tickfont=dict(size=10)),
+        yaxis=dict(tickfont=dict(size=11)),
+        height=280, margin=dict(l=110, b=100, t=20),
     )
-    st.plotly_chart(fig_pb, use_container_width=True)
-
-with cb:
-    st.subheader("Market Heat by Neighborhood")
-    heat_cols = ["median_dom", "avg_sale_to_list", "sold_above_list", "off_market_in_two_weeks"]
-    heat_cols = [c for c in heat_cols if c in snap.columns]
-    col_labels = {
-        "median_dom": "Days on Mkt", "avg_sale_to_list": "Sale / List",
-        "sold_above_list": "% Above List", "off_market_in_two_weeks": "Off Mkt <2wk",
-    }
-    higher_better = {
-        "median_dom": False, "avg_sale_to_list": True,
-        "sold_above_list": True, "off_market_in_two_weeks": True,
-    }
-    heat_src = snap[["neighborhood"] + heat_cols].dropna(subset=["median_dom"])
-    if not heat_src.empty:
-        z_matrix, text_matrix, col_names, row_names = [], [], [], heat_src["neighborhood"].tolist()
-        for col in heat_cols:
-            vals = pd.to_numeric(heat_src[col], errors="coerce")
-            mn, mx = vals.min(), vals.max()
-            norm = (vals - mn) / (mx - mn + 1e-9)
-            if not higher_better[col]:
-                norm = 1 - norm
-            z_matrix.append(norm.fillna(0.5).tolist())
-            fmt = "{:.0f}" if col == "median_dom" else "{:.0%}"
-            text_matrix.append([fmt.format(v) if pd.notna(v) else "" for v in vals])
-            col_names.append(col_labels[col])
-
-        fig_heat = go.Figure(go.Heatmap(
-            z=z_matrix, x=row_names, y=col_names,
-            text=text_matrix, texttemplate="%{text}", textfont=dict(size=10),
-            colorscale=[[0, "#d73027"], [0.5, "#ffffbf"], [1, "#1a9850"]],
-            showscale=True, zmin=0, zmax=1,
-            colorbar=dict(title="Hot ->", tickvals=[0, 0.5, 1],
-                          ticktext=["Cold", "Mid", "Hot"], len=0.6),
-        ))
-        fig_heat.update_layout(
-            xaxis=dict(tickangle=-40, tickfont=dict(size=10)),
-            yaxis=dict(tickfont=dict(size=11)),
-            height=280, margin=dict(l=110, b=100, t=20),
-        )
-        st.plotly_chart(fig_heat, use_container_width=True)
+    st.plotly_chart(fig_heat, use_container_width=True)
 
 st.divider()
 
